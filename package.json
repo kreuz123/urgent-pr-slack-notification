@@ -1,0 +1,36 @@
+{
+  "name": "urgent-pr-slack-notification",
+  "version": "1.0.0",
+  "description": "Decide whether an urgent pull request should trigger Slack channel notifications and reviewer DMs",
+  "main": "index.js",
+  "scripts": {
+    "build": "ncc build index.js --license licenses.txt",
+    "prepare": "npm run build",
+    "test": "jest",
+    "lint": "eslint index.js src/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kreuz123/urgent-pr-slack-notification"
+  },
+  "keywords": [
+    "github-action",
+    "slack",
+    "notification",
+    "pull-request"
+  ],
+  "author": "kreuz123",
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^2.0.3",
+    "@actions/github": "^7.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@vercel/ncc": "^0.45.0",
+    "eslint": "^9.39.5",
+    "globals": "^17.11.0",
+    "jest": "^30.4.2",
+    "prettier": "^3.9.6"
+  }
+}
