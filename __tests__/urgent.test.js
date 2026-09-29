@@ -54,13 +54,13 @@ describe("decideNotification - labeled", () => {
     expect(result).toMatchObject({ urgent: true, targetUsers: [], sendChannel: true, sendDm: false });
   });
 
-  test("fresh PR notifies reviewers already requested", () => {
+  test("fresh PR with reviewers defers to review_requested events", () => {
     const result = decide({
       action: "labeled",
       label: { name: "urgent" },
       pullRequest: pr({ created_at: FRESH_CREATED_AT, requested_reviewers: [{ login: "alice" }] }),
     });
-    expect(result).toMatchObject({ urgent: true, targetUsers: ["alice"], sendChannel: false, sendDm: true });
+    expect(result).toMatchObject({ urgent: true, targetUsers: [], sendChannel: false, sendDm: false });
   });
 
   test("existing PR notifies all requested reviewers", () => {
