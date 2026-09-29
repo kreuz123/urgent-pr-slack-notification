@@ -1,0 +1,41 @@
+name: Urgent PR Slack Notification
+description: Decide whether an urgent pull request needs a Slack channel notification and/or reviewer DMs, for use with slack-dual-notify-action
+author: kreuz123
+branding:
+  icon: alert-triangle
+  color: red
+
+inputs:
+  urgent-label:
+    description: Label name that marks a pull request as urgent. Matching is case-insensitive.
+    required: false
+    default: urgent
+  message-template:
+    description: >-
+      Slack message body. Supports the placeholders {{title}}, {{url}}, {{number}},
+      {{author}}, {{base}} and {{head}}. Newlines and special characters are preserved.
+    required: false
+    default: "🚨 Urgent PR: <{{url}}|{{title}}> needs review ASAP!"
+  fresh-pr-window-seconds:
+    description: >-
+      Age in seconds below which a pull request counts as freshly opened. Labeling a
+      fresh pull request skips reviewer notifications, because the review_requested
+      events that follow handle them.
+    required: false
+    default: "60"
+
+outputs:
+  urgent:
+    description: '"true" when the event should trigger an urgent Slack notification.'
+  target-users:
+    description: Comma-separated GitHub usernames to notify, ready for the target-users input of slack-dual-notify-action.
+  send-channel:
+    description: '"true" when a Slack channel notification should be sent.'
+  send-dm:
+    description: '"true" when reviewer direct messages should be sent.'
+  message:
+    description: Rendered Slack message, ready for the message-template input of slack-dual-notify-action. Empty when urgent is "false".
+
+runs:
+  using: node24
+  main: dist/index.js
