@@ -138,8 +138,9 @@ describe("run", () => {
 
     await run();
 
-    expect(setOutputSpy).toHaveBeenCalledWith("target-users", "");
+    expect(setOutputSpy).toHaveBeenCalledWith("target-users", "alice");
     expect(setOutputSpy).toHaveBeenCalledWith("send-channel", "false");
+    expect(setOutputSpy).toHaveBeenCalledWith("send-dm", "true");
   });
 
   test("fails on an invalid fresh window input", async () => {

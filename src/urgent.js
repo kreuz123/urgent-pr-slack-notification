@@ -38,9 +38,8 @@ function hasUrgentLabel(labels, urgentLabel) {
  *
  * Mirrors the behaviour of the original `Urgent PR Slack Notification`
  * workflow:
- * - `labeled` with the urgent label on a freshly opened PR only posts to the
- *   channel when no reviewers have been requested yet, because the
- *   `review_requested` events that follow handle the reviewers.
+ * - `labeled` with the urgent label on a freshly opened PR notifies any
+ *   reviewers already requested, and posts to the channel when none exist.
  * - `labeled` with the urgent label on an older PR notifies every currently
  *   requested reviewer.
  * - `review_requested` on an already urgent PR notifies the new reviewer.
@@ -79,9 +78,9 @@ function decideNotification({
 
     result.urgent = true;
     if (isPrFresh) {
-      result.targetUsers = [];
+      result.targetUsers = allReviewers;
       result.sendChannel = allReviewers.length === 0;
-      result.sendDm = false;
+      result.sendDm = allReviewers.length > 0;
     } else {
       result.targetUsers = allReviewers;
       result.sendChannel = true;

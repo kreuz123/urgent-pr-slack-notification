@@ -51,12 +51,12 @@ jobs:
 | Event              | Condition                                 | `target-users`      | `send-channel`  | `send-dm` |
 | ------------------ | ----------------------------------------- | ------------------- | --------------- | --------- |
 | `labeled`          | urgent label, PR is fresh, no reviewers    | empty               | `true`          | `false`   |
-| `labeled`          | urgent label, PR is fresh, has reviewers   | empty               | `false`         | `false`   |
+| `labeled`          | urgent label, PR is fresh, has reviewers   | requested reviewers | `false`         | `true`    |
 | `labeled`          | urgent label, PR is older than the window  | requested reviewers | `true`          | reviewers exist |
 | `review_requested` | PR already has the urgent label            | the new reviewer    | `true`          | `true`    |
 | anything else      | —                                          | empty               | `false`         | `false`   |
 
-A pull request counts as fresh while its age is below `fresh-pr-window-seconds`. Labeling a fresh PR that already has reviewers sends nothing, because each following `review_requested` event notifies its reviewer individually.
+A pull request counts as fresh while its age is below `fresh-pr-window-seconds`. Labeling a fresh PR notifies any reviewers already requested; subsequent `review_requested` events notify newly requested reviewers individually.
 
 ## Inputs
 
