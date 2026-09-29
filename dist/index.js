@@ -58363,15 +58363,22 @@ const PLACEHOLDER_PATTERN = /\{\{\s*([a-z_]+)\s*\}\}/g;
  * @param {object} pullRequest - `pull_request` payload object.
  * @returns {Record<string, string>} Placeholder name to value.
  */
+function escapeSlackText(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 function buildPlaceholders(pullRequest) {
   const number = pullRequest?.number;
   return {
-    title: pullRequest?.title ?? "",
+    title: escapeSlackText(pullRequest?.title),
     url: pullRequest?.html_url ?? "",
     number: number === undefined || number === null ? "" : String(number),
-    author: pullRequest?.user?.login ?? "",
-    base: pullRequest?.base?.ref ?? "",
-    head: pullRequest?.head?.ref ?? "",
+    author: escapeSlackText(pullRequest?.user?.login),
+    base: escapeSlackText(pullRequest?.base?.ref),
+    head: escapeSlackText(pullRequest?.head?.ref),
   };
 }
 
