@@ -41,6 +41,10 @@ describe("renderMessage", () => {
     expect(renderMessage("{{unknown}} {{title}}", pullRequest)).toBe("{{unknown}} Fix login");
   });
 
+  test.each(["constructor", "__proto__"])("leaves inherited property %s untouched", (key) => {
+    expect(renderMessage(`{{${key}}} {{title}}`, pullRequest)).toBe(`{{${key}}} Fix login`);
+  });
+
   test("preserves newlines and special characters", () => {
     const template = 'line one\n"quoted" `code`\n{{title}}';
     expect(renderMessage(template, pullRequest)).toBe('line one\n"quoted" `code`\nFix login');
