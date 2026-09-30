@@ -5,9 +5,10 @@
   "main": "index.js",
   "scripts": {
     "build": "ncc build index.js --license licenses.txt",
-    "prepare": "npm run build",
     "test": "jest",
-    "lint": "eslint index.js src/"
+    "lint": "eslint index.js src/",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "repository": {
     "type": "git",

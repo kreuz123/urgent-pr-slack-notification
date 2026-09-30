@@ -1,10 +1,10 @@
 const PLACEHOLDER_PATTERN = /\{\{\s*([a-z_]+)\s*\}\}/g;
 
 /**
- * Builds the placeholder values that can be used inside a message template.
+ * Escapes text for use in Slack messages.
  *
- * @param {object} pullRequest - `pull_request` payload object.
- * @returns {Record<string, string>} Placeholder name to value.
+ * @param {*} value - Text to escape.
+ * @returns {string} Escaped text.
  */
 function escapeSlackText(value) {
   return String(value ?? "")
@@ -13,6 +13,12 @@ function escapeSlackText(value) {
     .replaceAll(">", "&gt;");
 }
 
+/**
+ * Builds the placeholder values that can be used inside a message template.
+ *
+ * @param {object} pullRequest - `pull_request` payload object.
+ * @returns {Record<string, string>} Placeholder name to value.
+ */
 function buildPlaceholders(pullRequest) {
   const number = pullRequest?.number;
   return {
