@@ -2,8 +2,6 @@
 
 A GitHub Action that decides when a pull request labeled `urgent` needs a Slack notification, and produces the inputs for [`kreuz123/slack-dual-notify-action`](https://github.com/kreuz123/slack-dual-notify-action) so that reviewers get a DM and the channel gets a message that mentions them.
 
-This action is the JavaScript replacement for the `Urgent PR Slack Notification` workflow that used `actions/github-script` together with the reusable `REUSABLE_SLACK_NOTIFICATION.yml` workflow. It only makes the decision; `slack-dual-notify-action` performs the actual Slack delivery.
-
 - ✅ Reacts to `pull_request` `labeled` and `review_requested` events.
 - ✅ Skips reviewer notifications for a freshly opened PR, because the `review_requested` events that follow handle them.
 - ✅ Notifies every currently requested reviewer when an existing PR becomes urgent.
