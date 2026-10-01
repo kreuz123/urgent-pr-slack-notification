@@ -40,7 +40,7 @@ describe("createPullRequestStateLoader", () => {
     const get = jest
       .fn()
       .mockRejectedValueOnce(httpError(502))
-      .mockRejectedValueOnce(Object.assign(new Error("socket hang up")))
+      .mockRejectedValueOnce(httpError(500, "socket hang up"))
       .mockResolvedValue({ data: PR_DATA });
     const sleep = jest.fn().mockResolvedValue();
     const warn = jest.fn();
@@ -111,7 +111,7 @@ describe("isRetryableError", () => {
   test.each([
     [httpError(500), true],
     [httpError(429), true],
-    [new Error("network"), true],
+    [new Error("not a request error"), false],
     [httpError(403), false],
     [httpError(404), false],
   ])("%p -> %p", (error, expected) => {

@@ -11,16 +11,17 @@ function defaultSleep(ms) {
 }
 
 /**
- * Checks whether a failed GitHub API call is worth retrying. Network errors
- * (no HTTP status), rate limiting and server errors are retried; other client
- * errors such as missing permissions are not.
+ * Checks whether a failed GitHub API call is worth retrying. Rate limiting and
+ * server errors are retried, including network failures, which Octokit reports
+ * as status 500. Client errors such as missing permissions, and errors without
+ * an HTTP status (programming errors), are not.
  *
  * @param {*} error - Error thrown by Octokit.
  * @returns {boolean} True when the call should be retried.
  */
 function isRetryableError(error) {
   const status = error?.status;
-  return typeof status !== "number" || status === 429 || status >= 500;
+  return typeof status === "number" && (status === 429 || status >= 500);
 }
 
 /**

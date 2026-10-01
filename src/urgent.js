@@ -46,7 +46,8 @@ function normalizeReviewerList(logins) {
     const key = login.toLowerCase();
     if (login && !byKey.has(key)) byKey.set(key, login);
   }
-  return [...byKey.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map((key) => byKey.get(key));
+  // Default sort compares UTF-16 code units, so the order is locale-independent.
+  return [...byKey.keys()].sort().map((key) => byKey.get(key));
 }
 
 /**
