@@ -18,17 +18,34 @@ inputs:
     default: "🚨 Urgent PR: <{{url}}|{{title}}> needs review ASAP!"
   fresh-pr-window-seconds:
     description: >-
-      Age in seconds below which a pull request counts as freshly opened. Labeling a
-      fresh pull request skips reviewer notifications, because the review_requested
-      events that follow handle them.
+      Age in seconds below which an event counts as part of the initial pull request
+      creation. The age is pull_request.updated_at minus pull_request.created_at from
+      the event payload (falling back to the execution time when updated_at is
+      missing). Labeling a fresh pull request skips reviewer notifications, because
+      the review_requested events handle them.
     required: false
     default: "60"
+  github-token:
+    description: >-
+      Token used for read-only GitHub API calls (GET pull request) to check the live
+      labels and requested reviewers of initial events. Needs pull-requests: read.
+      When empty, the action falls back to the event payload and logs a warning.
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   urgent:
     description: '"true" when the event should trigger an urgent Slack notification.'
   target-users:
-    description: Comma-separated GitHub usernames to notify, ready for the target-users input of slack-dual-notify-action.
+    description: >-
+      Comma-separated GitHub usernames that should receive a DM, ready for the
+      target-users input of slack-dual-notify-action.
+  mention-users:
+    description: >-
+      Comma-separated GitHub usernames to mention in the channel message, ready for the
+      mention-users input of slack-dual-notify-action. Equals target-users except for
+      initial review_requested events, where it lists every observed individual
+      requested reviewer. Empty when urgent is "false" or when no reviewer is targeted.
   send-channel:
     description: '"true" when a Slack channel notification should be sent.'
   send-dm:
