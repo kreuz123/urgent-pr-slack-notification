@@ -1,4 +1,4 @@
-const { decideNotification, normalizeReviewerList, computeEventAge } = require("../src/urgent");
+const { decideNotification, normalizeReviewerList, computeEventAge, buildOwnership } = require("../src/urgent");
 
 // Unit-level simulation only: every "run" below is a direct decideNotification
 // call with mocked GitHub API state. None of these tests talk to GitHub or Slack.
@@ -14,6 +14,17 @@ function liveState(users, { labels = URGENT, teams = [] } = {}) {
 
 function failingState(message = "Service Unavailable") {
   return jest.fn().mockRejectedValue(Object.assign(new Error(message), { status: 503 }));
+}
+
+// Timeline mock: `labeledAt` lists the seconds of urgent labeled events, `requests`
+// maps each reviewer login to the second(s) of its review_requested events.
+function timeline({ labeledAt = [], requests = {} } = {}) {
+  return jest.fn().mockResolvedValue({
+    labeled: labeledAt.map((seconds) => ({ name: "urgent", createdAt: at(seconds) })),
+    reviewRequests: Object.entries(requests).flatMap(([login, seconds]) =>
+      [].concat(seconds).map((second) => ({ login, createdAt: at(second) })),
+    ),
+  });
 }
 
 function reviewRun(login, { labels = URGENT, payloadReviewers = [login], updatedAt = 1, now = 10, ...rest } = {}) {
@@ -257,15 +268,26 @@ describe("unchanged behaviour outside the initial batch", () => {
 });
 
 describe("initial labeled interactions", () => {
-  test("label payload with reviewers defers without reading the API", async () => {
-    const state = liveState(["alice"]);
-    const result = await labeledRun({ payloadReviewers: ["alice"], loadPullRequestState: state });
-    expect(result).toMatchObject({ urgent: true, sendChannel: false, sendDm: false, mentionUsers: [] });
-    expect(state).not.toHaveBeenCalled();
+  test("label payload with reviewers requested in the same second defers to the review runs", async () => {
+    const result = await labeledRun({
+      payloadReviewers: ["alice"],
+      loadPullRequestState: liveState(["alice"]),
+      loadTimeline: timeline({ labeledAt: [0], requests: { alice: 0 } }),
+    });
+    expect(result).toMatchObject({
+      urgent: true,
+      sendChannel: false,
+      sendDm: false,
+      mentionUsers: [],
+      ownership: "timeline",
+    });
   });
 
   test("empty label payload defers when the API already shows individual reviewers", async () => {
-    const result = await labeledRun({ loadPullRequestState: liveState(["alice"]) });
+    const result = await labeledRun({
+      loadPullRequestState: liveState(["alice"]),
+      loadTimeline: timeline({ labeledAt: [0], requests: { alice: 1 } }),
+    });
     expect(result).toMatchObject({ urgent: true, sendChannel: false, sendDm: false, reviewerSource: "api" });
   });
 
@@ -276,10 +298,11 @@ describe("initial labeled interactions", () => {
 
   test("label-before-review: one channel message for the whole creation", async () => {
     const state = liveState(["alice", "bob", "carol"]);
+    const loadTimeline = timeline({ labeledAt: [0], requests: { alice: 0, bob: 0, carol: 1 } });
     const decisions = [
-      await labeledRun({ payloadReviewers: [], loadPullRequestState: state }),
+      await labeledRun({ payloadReviewers: [], loadPullRequestState: state, loadTimeline }),
       ...(await Promise.all(
-        ["carol", "bob", "alice"].map((login) => reviewRun(login, { loadPullRequestState: state })),
+        ["carol", "bob", "alice"].map((login) => reviewRun(login, { loadPullRequestState: state, loadTimeline })),
       )),
     ];
     expect(summarize(decisions)).toEqual({
@@ -288,20 +311,251 @@ describe("initial labeled interactions", () => {
     });
   });
 
-  test("review-before-label: review runs confirm the label via the API", async () => {
+  test("review-before-label in the same second: review runs confirm the label via the API", async () => {
     const state = liveState(["alice", "bob", "carol"]);
+    const loadTimeline = timeline({ labeledAt: [1], requests: { alice: 1, bob: 1, carol: 1 } });
     const decisions = [
       ...(await Promise.all(
         ["alice", "bob", "carol"].map((login) =>
-          reviewRun(login, { labels: [], payloadReviewers: ["alice", "bob", "carol"], loadPullRequestState: state }),
+          reviewRun(login, {
+            labels: [],
+            payloadReviewers: ["alice", "bob", "carol"],
+            loadPullRequestState: state,
+            loadTimeline,
+          }),
         ),
       )),
-      await labeledRun({ payloadReviewers: ["alice", "bob", "carol"], loadPullRequestState: state }),
+      await labeledRun({ payloadReviewers: ["alice", "bob", "carol"], loadPullRequestState: state, loadTimeline }),
     ];
     expect(summarize(decisions)).toEqual({
       channelMessages: [["alice", "bob", "carol"]],
       dms: ["alice", "bob", "carol"],
     });
+  });
+
+  test("review-before-label in an earlier second: the label run owns the whole batch", async () => {
+    const state = liveState(["alice", "bob", "carol"]);
+    const loadTimeline = timeline({ labeledAt: [1], requests: { alice: 0, bob: 0, carol: 0 } });
+    for (const labelFirst of [true, false]) {
+      const label = () =>
+        labeledRun({ payloadReviewers: ["alice", "bob", "carol"], loadPullRequestState: state, loadTimeline });
+      const reviews = () =>
+        Promise.all(
+          ["alice", "bob", "carol"].map((login) => reviewRun(login, { loadPullRequestState: state, loadTimeline })),
+        );
+      const decisions = labelFirst ? [await label(), ...(await reviews())] : [...(await reviews()), await label()];
+      expect(summarize(decisions)).toEqual({
+        channelMessages: [["alice", "bob", "carol"]],
+        dms: ["alice", "bob", "carol"],
+      });
+    }
+  });
+});
+
+describe("timeline ownership: urgent added after the PR was created", () => {
+  test.each([8, 20, 59])(
+    "reviewers requested at creation, urgent added at second %i: the label run notifies everyone once",
+    async (labelSecond) => {
+      const notUrgent = liveState(["alice", "bob"], { labels: [] });
+      const urgentNow = liveState(["alice", "bob"]);
+      const loadTimeline = timeline({ labeledAt: [labelSecond], requests: { alice: 0, bob: 0 } });
+      const decisions = [
+        // Review runs finished before the label existed.
+        await reviewRun("alice", {
+          labels: [],
+          payloadReviewers: ["alice", "bob"],
+          now: 5,
+          loadPullRequestState: notUrgent,
+        }),
+        await reviewRun("bob", {
+          labels: [],
+          payloadReviewers: ["alice", "bob"],
+          now: 5,
+          loadPullRequestState: notUrgent,
+        }),
+        await labeledRun({
+          payloadReviewers: ["alice", "bob"],
+          updatedAt: labelSecond,
+          now: labelSecond + 3,
+          loadPullRequestState: urgentNow,
+          loadTimeline,
+        }),
+      ];
+      expect(decisions[2]).toMatchObject({
+        urgent: true,
+        initial: true,
+        targetUsers: ["alice", "bob"],
+        mentionUsers: ["alice", "bob"],
+        sendChannel: true,
+        sendDm: true,
+        ownership: "timeline",
+      });
+      expect(summarize(decisions)).toEqual({ channelMessages: [["alice", "bob"]], dms: ["alice", "bob"] });
+    },
+  );
+
+  test("review runs delayed until after the label defer to the label run", async () => {
+    const state = liveState(["alice", "bob"]);
+    const loadTimeline = timeline({ labeledAt: [8], requests: { alice: 0, bob: 0 } });
+    const decisions = [
+      await labeledRun({
+        payloadReviewers: ["alice", "bob"],
+        updatedAt: 8,
+        now: 9,
+        loadPullRequestState: state,
+        loadTimeline,
+      }),
+      await reviewRun("alice", { labels: [], now: 12, loadPullRequestState: state, loadTimeline }),
+      await reviewRun("bob", { labels: [], now: 12, loadPullRequestState: state, loadTimeline }),
+    ];
+    expect(decisions[1]).toMatchObject({ urgent: true, sendChannel: false, sendDm: false, targetUsers: [] });
+    expect(summarize(decisions)).toEqual({ channelMessages: [["alice", "bob"]], dms: ["alice", "bob"] });
+  });
+
+  test("mixed order: reviewers before the label go to the label run, the rest to a reviewer leader", async () => {
+    // alice before the label, carol in the same second as the label, bob after it.
+    const state = liveState(["alice", "bob", "carol"]);
+    const loadTimeline = timeline({ labeledAt: [8], requests: { alice: 0, carol: 8, bob: 9 } });
+    const runs = {
+      label: () => labeledRun({ updatedAt: 8, now: 10, loadPullRequestState: state, loadTimeline }),
+      alice: () => reviewRun("alice", { updatedAt: 0, now: 10, loadPullRequestState: state, loadTimeline }),
+      bob: () => reviewRun("bob", { updatedAt: 9, now: 10, loadPullRequestState: state, loadTimeline }),
+      carol: () => reviewRun("carol", { updatedAt: 8, now: 10, loadPullRequestState: state, loadTimeline }),
+    };
+    for (const order of permutations(Object.keys(runs))) {
+      const decisions = [];
+      for (const name of order) decisions.push(await runs[name]());
+      const result = summarize(decisions);
+      expect(result.channelMessages.sort()).toEqual([["alice"], ["bob", "carol"]]);
+      expect(result.dms.sort()).toEqual(["alice", "bob", "carol"]);
+    }
+  });
+
+  test("label removed and re-added: the latest urgent labeled event counts", async () => {
+    const state = liveState(["alice"]);
+    const loadTimeline = timeline({ labeledAt: [0, 20], requests: { alice: 5 } });
+    const decisions = [
+      await labeledRun({ updatedAt: 20, now: 21, loadPullRequestState: state, loadTimeline }),
+      await reviewRun("alice", { updatedAt: 5, now: 22, loadPullRequestState: state, loadTimeline }),
+    ];
+    expect(summarize(decisions)).toEqual({ channelMessages: [["alice"]], dms: ["alice"] });
+  });
+
+  test("only reviewers still pending are notified by the label run", async () => {
+    const result = await labeledRun({
+      loadPullRequestState: liveState(["bob"]),
+      loadTimeline: timeline({ labeledAt: [8], requests: { alice: 0, bob: 0 } }),
+    });
+    expect(result).toMatchObject({ targetUsers: ["bob"], mentionUsers: ["bob"], sendChannel: true, sendDm: true });
+  });
+
+  test("a reviewer without a timeline request event belongs to its own review run", async () => {
+    const state = liveState(["alice", "bob"]);
+    const loadTimeline = timeline({ labeledAt: [8], requests: { alice: 0 } });
+    const decisions = [
+      await labeledRun({ updatedAt: 8, loadPullRequestState: state, loadTimeline }),
+      await reviewRun("bob", { loadPullRequestState: state, loadTimeline }),
+    ];
+    expect(summarize(decisions)).toEqual({ channelMessages: [["alice"], ["bob"]], dms: ["alice", "bob"] });
+  });
+});
+
+describe("buildOwnership", () => {
+  test("matches labels and logins case-insensitively and uses the latest times", () => {
+    const ownership = buildOwnership(
+      {
+        labeled: [
+          { name: "URGENT", createdAt: at(10) },
+          { name: "bug", createdAt: at(30) },
+          { name: "urgent", createdAt: "not-a-date" },
+        ],
+        reviewRequests: [
+          { login: "Alice", createdAt: at(5) },
+          { login: "bob", createdAt: at(5) },
+          { login: "BOB", createdAt: at(12) },
+          { login: "carol", createdAt: at(10) },
+        ],
+      },
+      "Urgent",
+    );
+    expect(ownership.urgentLabeledAt).toBe(nowAt(10));
+    expect(ownership.ownedByLabel("alice")).toBe(true);
+    expect(ownership.ownedByLabel("Bob")).toBe(false);
+    expect(ownership.ownedByLabel("carol")).toBe(false);
+    expect(ownership.ownedByLabel("dave")).toBe(false);
+  });
+
+  test("owns nothing without an urgent labeled event", () => {
+    const ownership = buildOwnership({ labeled: [], reviewRequests: [{ login: "alice", createdAt: at(0) }] }, "urgent");
+    expect(ownership.urgentLabeledAt).toBeNull();
+    expect(ownership.ownedByLabel("alice")).toBe(false);
+  });
+});
+
+describe("timeline fallback behaviour", () => {
+  test("label run notifies every pending reviewer with a warning when the timeline fails", async () => {
+    const warn = jest.fn();
+    const result = await labeledRun({
+      loadPullRequestState: liveState(["bob", "alice"]),
+      loadTimeline: failingState("Timeline down"),
+      warn,
+    });
+    expect(result).toMatchObject({
+      targetUsers: ["alice", "bob"],
+      mentionUsers: ["alice", "bob"],
+      sendChannel: true,
+      sendDm: true,
+      ownership: "timeline-fallback",
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Timeline down.*may duplicate/));
+  });
+
+  test("label run without a token notifies the payload reviewers with warnings", async () => {
+    const warn = jest.fn();
+    const result = await labeledRun({ payloadReviewers: ["alice"], warn });
+    expect(result).toMatchObject({ targetUsers: ["alice"], sendChannel: true, sendDm: true });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/timeline API is not available \(no github-token\)/));
+  });
+
+  test("review run keeps the leader behaviour with a warning when the timeline fails", async () => {
+    const warn = jest.fn();
+    const result = await reviewRun("alice", {
+      loadPullRequestState: liveState(["alice", "bob"]),
+      loadTimeline: failingState("Timeline down"),
+      warn,
+    });
+    expect(result).toMatchObject({
+      targetUsers: ["alice"],
+      mentionUsers: ["alice", "bob"],
+      sendChannel: true,
+      sendDm: true,
+      ownership: "timeline-fallback",
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Timeline down.*initial batch/));
+  });
+
+  test("a timeline without the urgent labeled event is treated as unavailable", async () => {
+    const warn = jest.fn();
+    const result = await reviewRun("alice", {
+      loadPullRequestState: liveState(["alice"]),
+      loadTimeline: timeline({ requests: { alice: 0 } }),
+      warn,
+    });
+    expect(result).toMatchObject({ sendChannel: true, sendDm: true, ownership: "timeline-fallback" });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/no "urgent" labeled event/));
+  });
+
+  test("KNOWN LIMITATION: review run timeline failure after a later label duplicates the notification", async () => {
+    const state = liveState(["alice"]);
+    const decisions = [
+      await labeledRun({
+        updatedAt: 8,
+        loadPullRequestState: state,
+        loadTimeline: timeline({ labeledAt: [8], requests: { alice: 0 } }),
+      }),
+      await reviewRun("alice", { labels: [], loadPullRequestState: state, loadTimeline: failingState() }),
+    ];
+    expect(summarize(decisions)).toEqual({ channelMessages: [["alice"], ["alice"]], dms: ["alice", "alice"] });
   });
 });
 
@@ -335,7 +589,7 @@ describe("API failure behaviour", () => {
     const warn = jest.fn();
     const result = await labeledRun({ loadPullRequestState: failingState(), warn });
     expect(result).toMatchObject({ urgent: true, sendChannel: true, reviewerSource: "payload-fallback" });
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/duplicate a channel message/));
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Service Unavailable.*label payload reviewers/));
   });
 
   test("KNOWN LIMITATION: label missing from payload and API failure means no notification", async () => {
@@ -412,14 +666,6 @@ describe("KNOWN LIMITATIONS (characterization, not exactly-once)", () => {
       await reviewRun("bob", { loadPullRequestState: liveState(["alice", "bob"]) }),
     ];
     expect(summarize(decisions).channelMessages).toEqual([[], ["alice", "bob"]]);
-  });
-
-  test("urgent label added inside the window after review runs already read the PR -> nothing is sent", async () => {
-    const decisions = [
-      await reviewRun("alice", { labels: [], now: 5, loadPullRequestState: liveState(["alice"], { labels: [] }) }),
-      await labeledRun({ payloadReviewers: ["alice"], updatedAt: 30, now: 35 }),
-    ];
-    expect(summarize(decisions)).toEqual({ channelMessages: [], dms: [] });
   });
 
   test("payload updated_at bumped past the window by another edit -> run is treated as later and also posts", async () => {

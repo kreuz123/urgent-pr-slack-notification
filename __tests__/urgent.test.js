@@ -54,13 +54,30 @@ describe("decideNotification - labeled", () => {
     expect(result).toMatchObject({ urgent: true, targetUsers: [], sendChannel: true, sendDm: false });
   });
 
-  test("fresh PR with reviewers defers to review_requested events", async () => {
+  test("fresh PR with reviewers requested with the label defers to review_requested events", async () => {
     const result = await decide({
       action: "labeled",
       label: { name: "urgent" },
       pullRequest: pr({ created_at: FRESH_CREATED_AT, requested_reviewers: [{ login: "alice" }] }),
+      loadTimeline: async () => ({
+        labeled: [{ name: "urgent", createdAt: FRESH_CREATED_AT }],
+        reviewRequests: [{ login: "alice", createdAt: FRESH_CREATED_AT }],
+      }),
     });
     expect(result).toMatchObject({ urgent: true, targetUsers: [], sendChannel: false, sendDm: false });
+  });
+
+  test("fresh PR with reviewers requested before the label notifies them", async () => {
+    const result = await decide({
+      action: "labeled",
+      label: { name: "urgent" },
+      pullRequest: pr({ created_at: FRESH_CREATED_AT, requested_reviewers: [{ login: "alice" }] }),
+      loadTimeline: async () => ({
+        labeled: [{ name: "urgent", createdAt: "2026-01-01T00:09:38Z" }],
+        reviewRequests: [{ login: "alice", createdAt: FRESH_CREATED_AT }],
+      }),
+    });
+    expect(result).toMatchObject({ urgent: true, targetUsers: ["alice"], sendChannel: true, sendDm: true });
   });
 
   test("existing PR notifies all requested reviewers", async () => {
