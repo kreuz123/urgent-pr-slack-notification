@@ -45,8 +45,8 @@ describe("hasUrgentLabel", () => {
 });
 
 describe("decideNotification - labeled", () => {
-  test("fresh PR without reviewers posts to the channel only", () => {
-    const result = decide({
+  test("fresh PR without reviewers posts to the channel only", async () => {
+    const result = await decide({
       action: "labeled",
       label: { name: "urgent" },
       pullRequest: pr({ created_at: FRESH_CREATED_AT }),
@@ -54,8 +54,8 @@ describe("decideNotification - labeled", () => {
     expect(result).toMatchObject({ urgent: true, targetUsers: [], sendChannel: true, sendDm: false });
   });
 
-  test("fresh PR with reviewers defers to review_requested events", () => {
-    const result = decide({
+  test("fresh PR with reviewers defers to review_requested events", async () => {
+    const result = await decide({
       action: "labeled",
       label: { name: "urgent" },
       pullRequest: pr({ created_at: FRESH_CREATED_AT, requested_reviewers: [{ login: "alice" }] }),
@@ -63,8 +63,8 @@ describe("decideNotification - labeled", () => {
     expect(result).toMatchObject({ urgent: true, targetUsers: [], sendChannel: false, sendDm: false });
   });
 
-  test("existing PR notifies all requested reviewers", () => {
-    const result = decide({
+  test("existing PR notifies all requested reviewers", async () => {
+    const result = await decide({
       action: "labeled",
       label: { name: "Urgent" },
       pullRequest: pr({ requested_reviewers: [{ login: "alice" }, { login: "bob" }] }),
@@ -77,25 +77,25 @@ describe("decideNotification - labeled", () => {
     });
   });
 
-  test("existing PR without reviewers posts to the channel only", () => {
-    const result = decide({ action: "labeled", label: { name: "urgent" } });
+  test("existing PR without reviewers posts to the channel only", async () => {
+    const result = await decide({ action: "labeled", label: { name: "urgent" } });
     expect(result).toMatchObject({ urgent: true, targetUsers: [], sendChannel: true, sendDm: false });
   });
 
-  test("ignores other labels", () => {
-    const result = decide({ action: "labeled", label: { name: "bug" } });
+  test("ignores other labels", async () => {
+    const result = await decide({ action: "labeled", label: { name: "bug" } });
     expect(result).toMatchObject({ urgent: false, sendChannel: false, sendDm: false });
   });
 
-  test("supports a custom urgent label", () => {
-    const result = decide({ action: "labeled", label: { name: "P0" }, urgentLabel: "p0" });
+  test("supports a custom urgent label", async () => {
+    const result = await decide({ action: "labeled", label: { name: "P0" }, urgentLabel: "p0" });
     expect(result.urgent).toBe(true);
   });
 });
 
 describe("decideNotification - review_requested", () => {
-  test("notifies the new reviewer on an urgent PR", () => {
-    const result = decide({
+  test("notifies the new reviewer on an urgent PR", async () => {
+    const result = await decide({
       action: "review_requested",
       requestedReviewer: { login: "carol" },
       pullRequest: pr({ labels: [{ name: "urgent" }], requested_reviewers: [{ login: "carol" }] }),
@@ -108,13 +108,13 @@ describe("decideNotification - review_requested", () => {
     });
   });
 
-  test("ignores PRs without the urgent label", () => {
-    const result = decide({ action: "review_requested", requestedReviewer: { login: "carol" } });
+  test("ignores PRs without the urgent label", async () => {
+    const result = await decide({ action: "review_requested", requestedReviewer: { login: "carol" } });
     expect(result.urgent).toBe(false);
   });
 
-  test("ignores team review requests without a user login", () => {
-    const result = decide({
+  test("ignores team review requests without a user login", async () => {
+    const result = await decide({
       action: "review_requested",
       pullRequest: pr({ labels: [{ name: "urgent" }] }),
     });
@@ -123,16 +123,18 @@ describe("decideNotification - review_requested", () => {
 });
 
 describe("decideNotification - other events", () => {
-  test("returns no notification for unrelated actions", () => {
-    expect(decide({ action: "opened" }).urgent).toBe(false);
+  test("returns no notification for unrelated actions", async () => {
+    expect((await decide({ action: "opened" })).urgent).toBe(false);
   });
 
-  test("returns no notification without a pull request payload", () => {
-    expect(decideNotification({ action: "labeled", urgentLabel: "urgent", freshWindowSeconds: 60 }).urgent).toBe(false);
+  test("returns no notification without a pull request payload", async () => {
+    expect(
+      (await decideNotification({ action: "labeled", urgentLabel: "urgent", freshWindowSeconds: 60 })).urgent,
+    ).toBe(false);
   });
 
-  test("treats an unparsable creation date as not fresh", () => {
-    const result = decide({
+  test("treats an unparsable creation date as not fresh", async () => {
+    const result = await decide({
       action: "labeled",
       label: { name: "urgent" },
       pullRequest: pr({ created_at: "not-a-date", requested_reviewers: [{ login: "alice" }] }),

@@ -8,6 +8,7 @@ const core = __nccwpck_require__(7484);
 const github = __nccwpck_require__(3228);
 const { parseNumberInput } = __nccwpck_require__(5997);
 const { decideNotification } = __nccwpck_require__(9632);
+const { createPullRequestStateLoader } = __nccwpck_require__(1822);
 const { renderMessage } = __nccwpck_require__(1690);
 
 const DEFAULT_MESSAGE_TEMPLATE = "🚨 Urgent PR: <{{url}}|{{title}}> needs review ASAP!";
@@ -26,25 +27,44 @@ async function run() {
 
     if (!pullRequest) {
       core.info("No pull_request payload found; skipping urgent notification.");
-      setOutputs({ urgent: false, targetUsers: [], sendChannel: false, sendDm: false }, "");
+      setOutputs({ urgent: false, targetUsers: [], mentionUsers: [], sendChannel: false, sendDm: false }, "");
       return;
     }
 
-    const decision = decideNotification({
+    const token = core.getInput("github-token");
+    let loadPullRequestState;
+    if (token) {
+      const { owner, repo } = github.context.repo;
+      loadPullRequestState = createPullRequestStateLoader({
+        octokit: github.getOctokit(token),
+        owner,
+        repo,
+        pullNumber: pullRequest.number,
+        warn: core.warning,
+      });
+    }
+
+    const decision = await decideNotification({
       action,
       pullRequest,
       label: payload.label,
       requestedReviewer: payload.requested_reviewer,
       urgentLabel,
       freshWindowSeconds,
+      loadPullRequestState,
+      warn: core.warning,
     });
 
     const reviewerCount = Array.isArray(pullRequest.requested_reviewers)
       ? pullRequest.requested_reviewers.length
       : 0;
+    if (action === "review_requested" && !payload.requested_reviewer && payload.requested_team) {
+      core.info("Team review requests are not expanded to team members; skipping.");
+    }
     core.info(
       `Action: ${action}, UrgentLabel: ${urgentLabel}, RequestedReviewers: ${reviewerCount}, ` +
-        `PrAge: ${Math.round(decision.prAgeSeconds)}s`,
+        `EventAge: ${Math.round(decision.eventAgeSeconds)}s (${decision.ageSource}), Initial: ${decision.initial}, ` +
+        `ReviewerSource: ${decision.reviewerSource}`,
     );
 
     const message = decision.urgent ? renderMessage(messageTemplate, pullRequest) : "";
@@ -52,6 +72,7 @@ async function run() {
 
     core.info(
       `Result - Urgent: ${decision.urgent}, Users: ${decision.targetUsers.join(",")}, ` +
+        `Mentions: ${decision.mentionUsers.join(",")}, ` +
         `Channel: ${decision.sendChannel}, DM: ${decision.sendDm}`,
     );
   } catch (error) {
@@ -62,6 +83,7 @@ async function run() {
 function setOutputs(decision, message) {
   core.setOutput("urgent", String(decision.urgent));
   core.setOutput("target-users", decision.targetUsers.join(","));
+  core.setOutput("mention-users", decision.mentionUsers.join(","));
   core.setOutput("send-channel", String(decision.sendChannel));
   core.setOutput("send-dm", String(decision.sendDm));
   core.setOutput("message", message);
@@ -58437,6 +58459,106 @@ module.exports = { parseNumberInput };
 
 /***/ }),
 
+/***/ 1822:
+/***/ ((module) => {
+
+const DEFAULT_RETRY_DELAYS_MS = [1000, 3000];
+
+/**
+ * Waits for the given number of milliseconds.
+ *
+ * @param {number} ms - Delay in milliseconds.
+ * @returns {Promise<void>}
+ */
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Checks whether a failed GitHub API call is worth retrying. Rate limiting and
+ * server errors are retried, including network failures, which Octokit reports
+ * as status 500. Client errors such as missing permissions, and errors without
+ * an HTTP status (programming errors), are not.
+ *
+ * @param {*} error - Error thrown by Octokit.
+ * @returns {boolean} True when the call should be retried.
+ */
+function isRetryableError(error) {
+  const status = error?.status;
+  return typeof status === "number" && (status === 429 || status >= 500);
+}
+
+/**
+ * Creates a memoized loader that reads the current labels and requested
+ * reviewers of a pull request with `GET /repos/{owner}/{repo}/pulls/{pull_number}`.
+ *
+ * The repository comes from the workflow context (`GITHUB_REPOSITORY`) and the
+ * pull request number from the event payload; no URL from the pull request
+ * payload is used as an API destination. The result is a live, mutable
+ * snapshot of the pull request at read time.
+ *
+ * @param {object} options
+ * @param {object} options.octokit - Authenticated Octokit client.
+ * @param {string} options.owner - Repository owner.
+ * @param {string} options.repo - Repository name.
+ * @param {number} options.pullNumber - Pull request number.
+ * @param {number[]} [options.retryDelaysMs] - Delays between attempts; bounds the number of retries.
+ * @param {(ms: number) => Promise<void>} [options.sleep] - Sleep function, for testing.
+ * @param {(message: string) => void} [options.warn] - Warning logger.
+ * @returns {() => Promise<{ labels: Array<object>, requestedUsers: string[], requestedTeams: string[] }>}
+ */
+function createPullRequestStateLoader({
+  octokit,
+  owner,
+  repo,
+  pullNumber,
+  retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
+  sleep = defaultSleep,
+  warn = () => {},
+}) {
+  let pending;
+
+  async function load() {
+    if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
+      throw new Error("pull request number is missing from the event payload");
+    }
+
+    const maxAttempts = retryDelaysMs.length + 1;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
+        return {
+          labels: Array.isArray(data?.labels) ? data.labels : [],
+          requestedUsers: (Array.isArray(data?.requested_reviewers) ? data.requested_reviewers : [])
+            .map((reviewer) => reviewer?.login)
+            .filter((login) => typeof login === "string"),
+          requestedTeams: (Array.isArray(data?.requested_teams) ? data.requested_teams : [])
+            .map((team) => team?.slug)
+            .filter((slug) => typeof slug === "string"),
+        };
+      } catch (error) {
+        if (attempt >= maxAttempts || !isRetryableError(error)) throw error;
+        const delay = retryDelaysMs[attempt - 1];
+        warn(
+          `Reading pull request #${pullNumber} failed (attempt ${attempt}/${maxAttempts}: ${error?.message}); ` +
+            `retrying in ${delay}ms.`,
+        );
+        await sleep(delay);
+      }
+    }
+  }
+
+  return () => {
+    if (!pending) pending = load();
+    return pending;
+  };
+}
+
+module.exports = { createPullRequestStateLoader, isRetryableError, DEFAULT_RETRY_DELAYS_MS };
+
+
+/***/ }),
+
 /***/ 9632:
 /***/ ((module) => {
 
@@ -58475,17 +58597,83 @@ function hasUrgentLabel(labels, urgentLabel) {
 }
 
 /**
+ * Deduplicates logins case-insensitively (keeping the first spelling) and
+ * orders them deterministically by their lower-cased form.
+ *
+ * @param {unknown[]} logins - Raw login values.
+ * @returns {string[]} Normalized, deduplicated and sorted logins.
+ */
+function normalizeReviewerList(logins) {
+  const byKey = new Map();
+  for (const value of Array.isArray(logins) ? logins : []) {
+    const login = normalizeName(value);
+    const key = login.toLowerCase();
+    if (login && !byKey.has(key)) byKey.set(key, login);
+  }
+  // Default sort compares UTF-16 code units, so the order is locale-independent.
+  return [...byKey.keys()].sort().map((key) => byKey.get(key));
+}
+
+/**
+ * Computes the age of the pull request at the time the event payload was
+ * produced, using `pull_request.updated_at` from the payload snapshot. Falls
+ * back to the execution time when the payload has no usable `updated_at`.
+ *
+ * `updated_at` is an approximation of when the triggering change happened,
+ * not a guaranteed review-request or label time. Unlike the execution time,
+ * it does not depend on runner queue delays and is identical when the same
+ * event is re-run.
+ *
+ * @param {object} pullRequest - `pull_request` payload object.
+ * @param {number} now - Current time in milliseconds.
+ * @returns {{ eventAgeSeconds: number, ageSource: "payload-updated-at" | "execution-time" }}
+ */
+function computeEventAge(pullRequest, now) {
+  const createdAt = Date.parse(pullRequest.created_at);
+  const updatedAt = Date.parse(pullRequest.updated_at);
+  const ageSource = Number.isNaN(updatedAt) ? "execution-time" : "payload-updated-at";
+  const reference = Number.isNaN(updatedAt) ? now : updatedAt;
+  const eventAgeSeconds = Number.isNaN(createdAt) ? Number.POSITIVE_INFINITY : (reference - createdAt) / 1000;
+  return { eventAgeSeconds, ageSource };
+}
+
+/**
+ * Loads the live pull request state, reporting failures as warnings.
+ *
+ * @param {Function | undefined} loadPullRequestState - Async loader.
+ * @param {(message: string) => void} warn - Warning logger.
+ * @param {string} purpose - What the state is needed for, used in warnings.
+ * @returns {Promise<object | null>} State, or null when unavailable.
+ */
+async function tryLoadState(loadPullRequestState, warn, purpose) {
+  if (typeof loadPullRequestState !== "function") {
+    warn(`GitHub API is not available (no github-token); ${purpose}.`);
+    return null;
+  }
+  try {
+    return await loadPullRequestState();
+  } catch (error) {
+    warn(`Reading the pull request from the GitHub API failed (${error?.message}); ${purpose}.`);
+    return null;
+  }
+}
+
+/**
  * Decides whether an urgent Slack notification is required, and which
  * delivery channels (channel post and/or reviewer DMs) should be used.
  *
- * Mirrors the behaviour of the original `Urgent PR Slack Notification`
- * workflow:
- * - `labeled` with the urgent label on a freshly opened PR only posts to the
- *   channel when no reviewers have been requested yet, because the
- *   `review_requested` events that follow handle the reviewers.
+ * An event is "initial" when the pull request age in the event payload
+ * snapshot is below the fresh window. Behaviour:
+ * - `labeled` with the urgent label on an initial PR posts to the channel
+ *   only when no individual reviewers are requested (payload, then live API
+ *   state); otherwise the `review_requested` runs handle the reviewers.
  * - `labeled` with the urgent label on an older PR notifies every currently
  *   requested reviewer.
- * - `review_requested` on an already urgent PR notifies the new reviewer.
+ * - `review_requested` for an individual reviewer on an urgent PR DMs that
+ *   reviewer. For initial events, all runs read the requested reviewers and
+ *   only the run whose reviewer sorts first posts to the channel, mentioning
+ *   every observed reviewer. This is best-effort, not exactly-once.
+ * - Later `review_requested` events post to the channel and DM the reviewer.
  *
  * @param {object} options
  * @param {string} options.action - Webhook action, e.g. "labeled".
@@ -58493,11 +58681,14 @@ function hasUrgentLabel(labels, urgentLabel) {
  * @param {object} [options.label] - `label` payload object for `labeled` events.
  * @param {object} [options.requestedReviewer] - `requested_reviewer` payload object.
  * @param {string} options.urgentLabel - Label name that marks a PR as urgent.
- * @param {number} options.freshWindowSeconds - Age below which a PR counts as fresh.
+ * @param {number} options.freshWindowSeconds - Event age below which an event counts as initial.
  * @param {number} [options.now] - Current time in milliseconds, for testing.
- * @returns {{ urgent: boolean, targetUsers: string[], sendChannel: boolean, sendDm: boolean, prAgeSeconds: number }}
+ * @param {Function} [options.loadPullRequestState] - Async loader of the live labels and requested reviewers.
+ * @param {(message: string) => void} [options.warn] - Warning logger.
+ * @returns {Promise<{ urgent: boolean, targetUsers: string[], mentionUsers: string[], sendChannel: boolean,
+ *   sendDm: boolean, eventAgeSeconds: number, ageSource: string, initial: boolean, reviewerSource: string }>}
  */
-function decideNotification({
+async function decideNotification({
   action,
   pullRequest,
   label,
@@ -58505,46 +58696,112 @@ function decideNotification({
   urgentLabel,
   freshWindowSeconds,
   now = Date.now(),
+  loadPullRequestState,
+  warn = () => {},
 }) {
-  const result = { urgent: false, targetUsers: [], sendChannel: false, sendDm: false, prAgeSeconds: 0 };
+  const result = {
+    urgent: false,
+    targetUsers: [],
+    mentionUsers: [],
+    sendChannel: false,
+    sendDm: false,
+    eventAgeSeconds: 0,
+    ageSource: "none",
+    initial: false,
+    reviewerSource: "none",
+  };
   if (!pullRequest) return result;
 
   const allReviewers = collectReviewers(pullRequest.requested_reviewers);
   const newReviewer = normalizeName(requestedReviewer?.login);
-  const createdAt = Date.parse(pullRequest.created_at);
-  const prAgeSeconds = Number.isNaN(createdAt) ? Number.POSITIVE_INFINITY : (now - createdAt) / 1000;
-  const isPrFresh = prAgeSeconds < freshWindowSeconds;
-  result.prAgeSeconds = prAgeSeconds;
+  const { eventAgeSeconds, ageSource } = computeEventAge(pullRequest, now);
+  const isInitial = eventAgeSeconds < freshWindowSeconds;
+  Object.assign(result, { eventAgeSeconds, ageSource, initial: isInitial });
 
   if (action === "labeled") {
     if (normalizeName(label?.name).toLowerCase() !== urgentLabel.toLowerCase()) return result;
 
     result.urgent = true;
-    if (isPrFresh) {
-      result.targetUsers = [];
-      result.sendChannel = allReviewers.length === 0;
-      result.sendDm = false;
-    } else {
+    if (!isInitial) {
       result.targetUsers = allReviewers;
+      result.mentionUsers = allReviewers;
       result.sendChannel = true;
       result.sendDm = allReviewers.length > 0;
+      result.reviewerSource = "payload";
+      return result;
     }
+
+    if (allReviewers.length > 0) {
+      result.reviewerSource = "payload";
+      return result;
+    }
+
+    // The label payload may predate the initial review requests. When the live
+    // state already lists individual reviewers, their review_requested runs
+    // post the channel message instead.
+    const state = await tryLoadState(
+      loadPullRequestState,
+      warn,
+      "falling back to the label payload, which may duplicate a channel message",
+    );
+    if (state && normalizeReviewerList(state.requestedUsers).length > 0) {
+      result.reviewerSource = "api";
+      return result;
+    }
+    result.reviewerSource = state ? "api" : "payload-fallback";
+    result.sendChannel = true;
     return result;
   }
 
   if (action === "review_requested") {
-    if (!newReviewer || !hasUrgentLabel(pullRequest.labels, urgentLabel)) return result;
+    if (!newReviewer) return result;
+
+    const payloadUrgent = hasUrgentLabel(pullRequest.labels, urgentLabel);
+    if (!isInitial) {
+      if (!payloadUrgent) return result;
+      result.urgent = true;
+      result.targetUsers = [newReviewer];
+      result.mentionUsers = [newReviewer];
+      result.sendChannel = true;
+      result.sendDm = true;
+      result.reviewerSource = "payload";
+      return result;
+    }
+
+    // Initial request: the payload may predate the urgent label, so a missing
+    // label is re-checked against the live state.
+    let state = null;
+    if (!payloadUrgent) {
+      state = await tryLoadState(
+        loadPullRequestState,
+        warn,
+        "cannot confirm the urgent label, so no notification is sent",
+      );
+      if (!state || !hasUrgentLabel(state.labels, urgentLabel)) return result;
+    } else {
+      state = await tryLoadState(
+        loadPullRequestState,
+        warn,
+        "electing the channel leader from the payload reviewers, which may duplicate or miss the channel message",
+      );
+    }
+
+    const observed = state ? state.requestedUsers : allReviewers;
+    const reviewers = normalizeReviewerList([...observed, newReviewer]);
+    const leader = reviewers[0];
 
     result.urgent = true;
     result.targetUsers = [newReviewer];
-    result.sendChannel = true;
+    result.mentionUsers = reviewers;
+    result.sendChannel = leader.toLowerCase() === newReviewer.toLowerCase();
     result.sendDm = true;
+    result.reviewerSource = state ? "api" : "payload-fallback";
   }
 
   return result;
 }
 
-module.exports = { decideNotification, collectReviewers, hasUrgentLabel };
+module.exports = { decideNotification, collectReviewers, hasUrgentLabel, normalizeReviewerList, computeEventAge };
 
 
 /***/ }),
