@@ -116,7 +116,7 @@ All inputs are optional.
 | --- | --- | --- |
 | `urgent-label` | `urgent` | Label marking a PR as urgent; case-insensitive. |
 | `message-template` | `🚨 Urgent PR: <{{url}}\|{{title}}> needs review ASAP!` | Slack message template using the supported placeholders. |
-| `fresh-pr-window-seconds` | `60` | Event-age threshold in seconds for treating a PR as newly created. Uses payload `updated_at` minus `created_at`, falling back to execution time if `updated_at` is unavailable. |
+| `fresh-pr-window-seconds` | `60` | Window after PR creation for coordinating initial `urgent` and reviewer events via the PR timeline, reducing duplicate notifications. Later events use normal notification behavior. Age uses `updated_at - created_at`, falling back to execution time. |
 | `github-token` | `${{ github.token }}` | Token for reading PR details and timeline; requires `pull-requests: read`. If empty, uses the event payload only. |
 
 ## Outputs
