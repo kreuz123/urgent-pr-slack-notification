@@ -58,7 +58,7 @@ permissions:
 
 ### Slack reviewer mapping
 
-Configure `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`, and `SLACK_REVIEWER_MAP` as repository secrets for the Slack step.
+Configure `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`, and `SLACK_REVIEWER_MAP` as repository secrets for the Slack step. See [`slack-dual-notify-action` Setup](https://github.com/kreuz123/slack-dual-notify-action#setup) for setup details.
 
 `SLACK_REVIEWER_MAP` is a JSON object mapping GitHub usernames to Slack user IDs:
 
