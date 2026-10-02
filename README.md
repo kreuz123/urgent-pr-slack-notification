@@ -9,7 +9,7 @@ Use it with [`kreuz123/slack-dual-notify-action`](https://github.com/kreuz123/sl
 - Send one channel message mentioning all reviewers for a newly created urgent PR, while each reviewer receives their own DM.
 - Render a Slack message from pull request details.
 
-This action determines notification recipients and settings. It does not send Slack messages itself. Notifications are best-effort; see [Limitations](#limitations).
+This action determines notification recipients and settings. It does not send Slack messages itself. 
 
 ## Quick start
 
