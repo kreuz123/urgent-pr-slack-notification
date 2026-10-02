@@ -13,8 +13,6 @@ This action determines notification recipients and settings. It does not send Sl
 
 ## Quick start
 
-Replace `<version>` with a release tag or commit SHA for each action.
-
 ```yaml
 name: Urgent PR Slack Notification
 
@@ -31,11 +29,11 @@ jobs:
     steps:
       - name: Check urgent PR
         id: check
-        uses: kreuz123/urgent-pr-slack-notification@<version>
+        uses: kreuz123/urgent-pr-slack-notification@v1
 
       - name: Send Slack notification
         if: steps.check.outputs.urgent == 'true'
-        uses: kreuz123/slack-dual-notify-action@<version>
+        uses: kreuz123/slack-dual-notify-action@v1
         with:
           message-template: ${{ steps.check.outputs.message }}
           target-users: ${{ steps.check.outputs.target-users }}
