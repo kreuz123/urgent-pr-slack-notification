@@ -58402,6 +58402,13 @@ function escapeSlackText(value) {
  * @param {object} pullRequest - `pull_request` payload object.
  * @returns {Record<string, string>} Placeholder name to value.
  */
+function escapeSlackText(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 function buildPlaceholders(pullRequest) {
   const number = pullRequest?.number;
   return {
