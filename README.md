@@ -4,8 +4,8 @@ A GitHub Action that decides when an urgent pull request should notify reviewers
 
 Use it with [`kreuz123/slack-dual-notify-action`](https://github.com/kreuz123/slack-dual-notify-action) to:
 
-- Notify pending individual reviewers when a PR receives the `urgent` label.
-- Notify a individual reviewer added to an already urgent PR.
+- Notify pending individual reviewers when a PR receives the `urgent` label; if no individual reviewers are requested, send a channel message without mentions.
+- Notify an individual reviewer added to an already urgent PR.
 - Send one channel message mentioning all individual reviewers for a newly created urgent PR, while each reviewer receives their own DM.
 - Render a Slack message from pull request details.
 
@@ -116,7 +116,7 @@ Default message:
 
 Only individual reviewers are notified, including individual reviewers requested through CODEOWNERS.
 
-Team reviewers and team CODEOWNERS are not mentioned or sent DMs. An `urgent` label can still send a channel message, but team review requests do not trigger notifications.
+A team `review_requested` event does not trigger a notification. When an `urgent` label is added, a channel message is still sent even if there are no individual reviewers (including when only teams are requested). Teams are not mentioned and do not receive DMs.
 
 ## Inputs
 
