@@ -45,6 +45,16 @@ jobs:
           slack-reviewer-map: ${{ secrets.SLACK_REVIEWER_MAP }}
 ```
 
+## Slack notification preview
+
+When an urgent PR has requested reviewers, the workflow posts a channel message that mentions them:
+
+![Slack channel notification](docs/images/channel-msg.png)
+
+Each requested reviewer also receives a direct message:
+
+![Slack direct message notification](docs/images/dm.png)
+
 ## Required setup
 
 ### Workflow permissions
@@ -58,7 +68,7 @@ permissions:
 
 ### Slack reviewer mapping
 
-Configure `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`, and `SLACK_REVIEWER_MAP` as repository secrets for the Slack step. See [`slack-dual-notify-action` Setup](https://github.com/kreuz123/slack-dual-notify-action#setup) for setup details.
+Configure `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`, and `SLACK_REVIEWER_MAP` as repository secrets for the Slack step. See [`slack-dual-notify-action` Setup](https://github.com/kreuz123/slack-dual-notify-action#setup).
 
 `SLACK_REVIEWER_MAP` is a JSON object mapping GitHub usernames to Slack user IDs:
 
