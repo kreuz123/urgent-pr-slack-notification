@@ -50,6 +50,30 @@ jobs:
 
 `SLACK_REVIEWER_MAP` is a JSON object mapping GitHub usernames to Slack user IDs, for example `{ "alice": "U0123456789" }`. Mapped reviewers are mentioned as `<@U0123456789>` in the channel message and receive a DM.
 
+### Customize the Slack message
+
+Set `message-template` on the `Check urgent` step (`kreuz123/urgent-pr-slack-notification`), not on `slack-dual-notify-action`. The checker renders the template; keep `message-template: ${{ steps.check.outputs.message }}` on the downstream Slack step so it receives the rendered result. Leave the Slack step's other inputs as shown in [Usage](#usage).
+
+```yaml
+- name: Check urgent
+  id: check
+  uses: kreuz123/urgent-pr-slack-notification@<version-with-mention-users>
+  with:
+    message-template: |
+      *Urgent PR*
+      Title: {{title}}
+      Author: {{author}}
+      Link: {{url}}
+
+- name: Send Slack notification
+  if: steps.check.outputs.urgent == 'true'
+  uses: kreuz123/slack-dual-notify-action@<version-with-mention-users>
+  with:
+    message-template: ${{ steps.check.outputs.message }}
+```
+
+Supported placeholders are `{{title}}`, `{{url}}`, `{{number}}`, `{{author}}`, `{{base}}`, and `{{head}}`. Multiline YAML block scalars (`|`) are supported and preserve newlines. The workflow needs both `contents: read` and `pull-requests: read`; granting only `contents: read` is not sufficient.
+
 ### Caller changes
 
 Existing callers need two small changes:
