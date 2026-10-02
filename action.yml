@@ -21,15 +21,17 @@ inputs:
       Age in seconds below which an event counts as part of the initial pull request
       creation. The age is pull_request.updated_at minus pull_request.created_at from
       the event payload (falling back to the execution time when updated_at is
-      missing). Labeling a fresh pull request skips reviewer notifications, because
-      the review_requested events handle them.
+      missing). For initial events the pull request timeline decides ownership:
+      reviewers requested before the latest urgent label are notified by the labeled
+      run, all others by their review_requested runs.
     required: false
     default: "60"
   github-token:
     description: >-
-      Token used for read-only GitHub API calls (GET pull request) to check the live
-      labels and requested reviewers of initial events. Needs pull-requests: read.
-      When empty, the action falls back to the event payload and logs a warning.
+      Token used for read-only GitHub API calls (GET pull request and GET issue
+      timeline) to check the live labels, requested reviewers and label/review-request
+      times of initial events. Needs pull-requests: read. When empty, the action falls
+      back to the event payload and logs a warning.
     required: false
     default: ${{ github.token }}
 

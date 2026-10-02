@@ -2,7 +2,7 @@ const core = require("@actions/core");
 const github = require("@actions/github");
 const { parseNumberInput } = require("./src/number-input");
 const { decideNotification } = require("./src/urgent");
-const { createPullRequestStateLoader } = require("./src/pull-request-state");
+const { createPullRequestStateLoader, createTimelineLoader } = require("./src/pull-request-state");
 const { renderMessage } = require("./src/message");
 
 const DEFAULT_MESSAGE_TEMPLATE = "🚨 Urgent PR: <{{url}}|{{title}}> needs review ASAP!";
@@ -27,15 +27,18 @@ async function run() {
 
     const token = core.getInput("github-token");
     let loadPullRequestState;
+    let loadTimeline;
     if (token) {
       const { owner, repo } = github.context.repo;
-      loadPullRequestState = createPullRequestStateLoader({
+      const loaderOptions = {
         octokit: github.getOctokit(token),
         owner,
         repo,
         pullNumber: pullRequest.number,
         warn: core.warning,
-      });
+      };
+      loadPullRequestState = createPullRequestStateLoader(loaderOptions);
+      loadTimeline = createTimelineLoader(loaderOptions);
     }
 
     const decision = await decideNotification({
@@ -46,6 +49,7 @@ async function run() {
       urgentLabel,
       freshWindowSeconds,
       loadPullRequestState,
+      loadTimeline,
       warn: core.warning,
     });
 
@@ -58,7 +62,7 @@ async function run() {
     core.info(
       `Action: ${action}, UrgentLabel: ${urgentLabel}, RequestedReviewers: ${reviewerCount}, ` +
         `EventAge: ${Math.round(decision.eventAgeSeconds)}s (${decision.ageSource}), Initial: ${decision.initial}, ` +
-        `ReviewerSource: ${decision.reviewerSource}`,
+        `ReviewerSource: ${decision.reviewerSource}, Ownership: ${decision.ownership}`,
     );
 
     const message = decision.urgent ? renderMessage(messageTemplate, pullRequest) : "";

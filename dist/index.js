@@ -8,7 +8,7 @@ const core = __nccwpck_require__(7484);
 const github = __nccwpck_require__(3228);
 const { parseNumberInput } = __nccwpck_require__(5997);
 const { decideNotification } = __nccwpck_require__(9632);
-const { createPullRequestStateLoader } = __nccwpck_require__(1822);
+const { createPullRequestStateLoader, createTimelineLoader } = __nccwpck_require__(1822);
 const { renderMessage } = __nccwpck_require__(1690);
 
 const DEFAULT_MESSAGE_TEMPLATE = "🚨 Urgent PR: <{{url}}|{{title}}> needs review ASAP!";
@@ -33,15 +33,18 @@ async function run() {
 
     const token = core.getInput("github-token");
     let loadPullRequestState;
+    let loadTimeline;
     if (token) {
       const { owner, repo } = github.context.repo;
-      loadPullRequestState = createPullRequestStateLoader({
+      const loaderOptions = {
         octokit: github.getOctokit(token),
         owner,
         repo,
         pullNumber: pullRequest.number,
         warn: core.warning,
-      });
+      };
+      loadPullRequestState = createPullRequestStateLoader(loaderOptions);
+      loadTimeline = createTimelineLoader(loaderOptions);
     }
 
     const decision = await decideNotification({
@@ -52,6 +55,7 @@ async function run() {
       urgentLabel,
       freshWindowSeconds,
       loadPullRequestState,
+      loadTimeline,
       warn: core.warning,
     });
 
@@ -64,7 +68,7 @@ async function run() {
     core.info(
       `Action: ${action}, UrgentLabel: ${urgentLabel}, RequestedReviewers: ${reviewerCount}, ` +
         `EventAge: ${Math.round(decision.eventAgeSeconds)}s (${decision.ageSource}), Initial: ${decision.initial}, ` +
-        `ReviewerSource: ${decision.reviewerSource}`,
+        `ReviewerSource: ${decision.reviewerSource}, Ownership: ${decision.ownership}`,
     );
 
     const message = decision.urgent ? renderMessage(messageTemplate, pullRequest) : "";
@@ -58489,6 +58493,56 @@ function isRetryableError(error) {
 }
 
 /**
+ * Calls `request` with bounded retries for transient errors.
+ *
+ * @param {() => Promise<*>} request - API call to perform.
+ * @param {object} options
+ * @param {string} options.what - Description used in warnings, e.g. "Reading pull request #7".
+ * @param {number[]} options.retryDelaysMs - Delays between attempts; bounds the number of retries.
+ * @param {(ms: number) => Promise<void>} options.sleep - Sleep function.
+ * @param {(message: string) => void} options.warn - Warning logger.
+ * @returns {Promise<*>} Result of the first successful attempt.
+ */
+async function withRetries(request, { what, retryDelaysMs, sleep, warn }) {
+  const maxAttempts = retryDelaysMs.length + 1;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await request();
+    } catch (error) {
+      if (attempt >= maxAttempts || !isRetryableError(error)) throw error;
+      const delay = retryDelaysMs[attempt - 1];
+      warn(`${what} failed (attempt ${attempt}/${maxAttempts}: ${error?.message}); retrying in ${delay}ms.`);
+      await sleep(delay);
+    }
+  }
+}
+
+/**
+ * Wraps an async function so that it runs at most once.
+ *
+ * @param {() => Promise<*>} load - Function to memoize.
+ * @returns {() => Promise<*>} Memoized function.
+ */
+function memoize(load) {
+  let pending;
+  return () => {
+    if (!pending) pending = load();
+    return pending;
+  };
+}
+
+/**
+ * Throws when the pull request number from the payload is not usable.
+ *
+ * @param {*} pullNumber - Pull request number.
+ */
+function assertPullNumber(pullNumber) {
+  if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
+    throw new Error("pull request number is missing from the event payload");
+  }
+}
+
+/**
  * Creates a memoized loader that reads the current labels and requested
  * reviewers of a pull request with `GET /repos/{owner}/{repo}/pulls/{pull_number}`.
  *
@@ -58516,45 +58570,75 @@ function createPullRequestStateLoader({
   sleep = defaultSleep,
   warn = () => {},
 }) {
-  let pending;
-
-  async function load() {
-    if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
-      throw new Error("pull request number is missing from the event payload");
-    }
-
-    const maxAttempts = retryDelaysMs.length + 1;
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber });
-        return {
-          labels: Array.isArray(data?.labels) ? data.labels : [],
-          requestedUsers: (Array.isArray(data?.requested_reviewers) ? data.requested_reviewers : [])
-            .map((reviewer) => reviewer?.login)
-            .filter((login) => typeof login === "string"),
-          requestedTeams: (Array.isArray(data?.requested_teams) ? data.requested_teams : [])
-            .map((team) => team?.slug)
-            .filter((slug) => typeof slug === "string"),
-        };
-      } catch (error) {
-        if (attempt >= maxAttempts || !isRetryableError(error)) throw error;
-        const delay = retryDelaysMs[attempt - 1];
-        warn(
-          `Reading pull request #${pullNumber} failed (attempt ${attempt}/${maxAttempts}: ${error?.message}); ` +
-            `retrying in ${delay}ms.`,
-        );
-        await sleep(delay);
-      }
-    }
-  }
-
-  return () => {
-    if (!pending) pending = load();
-    return pending;
-  };
+  return memoize(async () => {
+    assertPullNumber(pullNumber);
+    const { data } = await withRetries(() => octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber }), {
+      what: `Reading pull request #${pullNumber}`,
+      retryDelaysMs,
+      sleep,
+      warn,
+    });
+    return {
+      labels: Array.isArray(data?.labels) ? data.labels : [],
+      requestedUsers: (Array.isArray(data?.requested_reviewers) ? data.requested_reviewers : [])
+        .map((reviewer) => reviewer?.login)
+        .filter((login) => typeof login === "string"),
+      requestedTeams: (Array.isArray(data?.requested_teams) ? data.requested_teams : [])
+        .map((team) => team?.slug)
+        .filter((slug) => typeof slug === "string"),
+    };
+  });
 }
 
-module.exports = { createPullRequestStateLoader, isRetryableError, DEFAULT_RETRY_DELAYS_MS };
+/**
+ * Creates a memoized loader that reads the `labeled` and individual
+ * `review_requested` events of a pull request with the read-only, paginated
+ * `GET /repos/{owner}/{repo}/issues/{issue_number}/timeline` endpoint.
+ *
+ * Like the state loader, the repository comes from the workflow context and
+ * the number from the event payload. Only GitHub's own event history is read;
+ * nothing is stored.
+ *
+ * @param {object} options - Same options as {@link createPullRequestStateLoader}.
+ * @returns {() => Promise<{ labeled: Array<{ name: string, createdAt: string }>,
+ *   reviewRequests: Array<{ login: string, createdAt: string }> }>}
+ */
+function createTimelineLoader({
+  octokit,
+  owner,
+  repo,
+  pullNumber,
+  retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
+  sleep = defaultSleep,
+  warn = () => {},
+}) {
+  return memoize(async () => {
+    assertPullNumber(pullNumber);
+    const events = await withRetries(
+      () =>
+        octokit.paginate(octokit.rest.issues.listEventsForTimeline, {
+          owner,
+          repo,
+          issue_number: pullNumber,
+          per_page: 100,
+        }),
+      { what: `Reading the timeline of pull request #${pullNumber}`, retryDelaysMs, sleep, warn },
+    );
+    const labeled = [];
+    const reviewRequests = [];
+    for (const event of Array.isArray(events) ? events : []) {
+      if (typeof event?.created_at !== "string") continue;
+      if (event.event === "labeled" && typeof event.label?.name === "string") {
+        labeled.push({ name: event.label.name, createdAt: event.created_at });
+      } else if (event.event === "review_requested" && typeof event.requested_reviewer?.login === "string") {
+        reviewRequests.push({ login: event.requested_reviewer.login, createdAt: event.created_at });
+      }
+    }
+    return { labeled, reviewRequests };
+  });
+}
+
+module.exports = { createPullRequestStateLoader, createTimelineLoader, isRetryableError, DEFAULT_RETRY_DELAYS_MS };
 
 
 /***/ }),
@@ -58659,20 +58743,99 @@ async function tryLoadState(loadPullRequestState, warn, purpose) {
 }
 
 /**
+ * Derives the notification ownership rule from the pull request timeline.
+ *
+ * `urgentLabeledAt` is the time of the latest urgent `labeled` event (L).
+ * A reviewer whose latest individual `review_requested` event is strictly
+ * before L was requested before the PR became urgent, so the `labeled` run
+ * owns that reviewer's notification. Requests in the same second as L or
+ * later, and reviewers without a request event, belong to their
+ * `review_requested` runs. Only the latest label time and each reviewer's
+ * request time are compared; events are not otherwise ordered.
+ *
+ * @param {{ labeled?: Array<object>, reviewRequests?: Array<object> }} timeline - Loaded timeline events.
+ * @param {string} urgentLabel - Label name that marks a PR as urgent.
+ * @returns {{ urgentLabeledAt: number | null, ownedByLabel: (login: string) => boolean }}
+ */
+function buildOwnership(timeline, urgentLabel) {
+  const target = urgentLabel.toLowerCase();
+  let urgentLabeledAt = null;
+  for (const event of Array.isArray(timeline?.labeled) ? timeline.labeled : []) {
+    const time = Date.parse(event?.createdAt);
+    if (normalizeName(event?.name).toLowerCase() !== target || Number.isNaN(time)) continue;
+    if (urgentLabeledAt === null || time > urgentLabeledAt) urgentLabeledAt = time;
+  }
+
+  const requestedAt = new Map();
+  for (const event of Array.isArray(timeline?.reviewRequests) ? timeline.reviewRequests : []) {
+    const key = normalizeName(event?.login).toLowerCase();
+    const time = Date.parse(event?.createdAt);
+    if (!key || Number.isNaN(time)) continue;
+    if (!requestedAt.has(key) || time > requestedAt.get(key)) requestedAt.set(key, time);
+  }
+
+  return {
+    urgentLabeledAt,
+    ownedByLabel: (login) => {
+      const time = requestedAt.get(normalizeName(login).toLowerCase());
+      return urgentLabeledAt !== null && time !== undefined && time < urgentLabeledAt;
+    },
+  };
+}
+
+/**
+ * Loads the timeline and derives the ownership rule, reporting failures and
+ * a missing urgent `labeled` event as warnings.
+ *
+ * @param {Function | undefined} loadTimeline - Async timeline loader.
+ * @param {string} urgentLabel - Label name that marks a PR as urgent.
+ * @param {(message: string) => void} warn - Warning logger.
+ * @param {string} purpose - Fallback description, used in warnings.
+ * @returns {Promise<ReturnType<typeof buildOwnership> | null>} Ownership, or null when unavailable.
+ */
+async function tryLoadOwnership(loadTimeline, urgentLabel, warn, purpose) {
+  if (typeof loadTimeline !== "function") {
+    warn(`GitHub timeline API is not available (no github-token); ${purpose}.`);
+    return null;
+  }
+  let timeline;
+  try {
+    timeline = await loadTimeline();
+  } catch (error) {
+    warn(`Reading the pull request timeline from the GitHub API failed (${error?.message}); ${purpose}.`);
+    return null;
+  }
+  const ownership = buildOwnership(timeline, urgentLabel);
+  if (ownership.urgentLabeledAt === null) {
+    warn(`The pull request timeline has no "${urgentLabel}" labeled event; ${purpose}.`);
+    return null;
+  }
+  return ownership;
+}
+
+/**
  * Decides whether an urgent Slack notification is required, and which
  * delivery channels (channel post and/or reviewer DMs) should be used.
  *
  * An event is "initial" when the pull request age in the event payload
- * snapshot is below the fresh window. Behaviour:
+ * snapshot is below the fresh window. For initial events, the PR timeline
+ * decides who owns each reviewer's notification (see {@link buildOwnership}):
+ * reviewers requested strictly before the latest urgent label belong to the
+ * `labeled` run, all others to their `review_requested` runs. Behaviour:
  * - `labeled` with the urgent label on an initial PR posts to the channel
- *   only when no individual reviewers are requested (payload, then live API
- *   state); otherwise the `review_requested` runs handle the reviewers.
+ *   only when no individual reviewers are requested (live API state, then
+ *   payload). Otherwise it notifies (channel + DMs) the reviewers it owns, and
+ *   defers when it owns none. Without a usable timeline it notifies every
+ *   requested reviewer, accepting a possible duplicate over a missed message.
  * - `labeled` with the urgent label on an older PR notifies every currently
  *   requested reviewer.
  * - `review_requested` for an individual reviewer on an urgent PR DMs that
- *   reviewer. For initial events, all runs read the requested reviewers and
- *   only the run whose reviewer sorts first posts to the channel, mentioning
- *   every observed reviewer. This is best-effort, not exactly-once.
+ *   reviewer. For initial events, a run whose reviewer is owned by the
+ *   `labeled` run sends nothing. The other runs read the requested reviewers
+ *   not owned by the `labeled` run and only the run whose reviewer sorts
+ *   first posts to the channel, mentioning every one of them. Without a usable
+ *   timeline, no reviewer is treated as owned by the `labeled` run. This is
+ *   best-effort, not exactly-once.
  * - Later `review_requested` events post to the channel and DM the reviewer.
  *
  * @param {object} options
@@ -58684,9 +58847,11 @@ async function tryLoadState(loadPullRequestState, warn, purpose) {
  * @param {number} options.freshWindowSeconds - Event age below which an event counts as initial.
  * @param {number} [options.now] - Current time in milliseconds, for testing.
  * @param {Function} [options.loadPullRequestState] - Async loader of the live labels and requested reviewers.
+ * @param {Function} [options.loadTimeline] - Async loader of the timeline `labeled` and `review_requested` events.
  * @param {(message: string) => void} [options.warn] - Warning logger.
  * @returns {Promise<{ urgent: boolean, targetUsers: string[], mentionUsers: string[], sendChannel: boolean,
- *   sendDm: boolean, eventAgeSeconds: number, ageSource: string, initial: boolean, reviewerSource: string }>}
+ *   sendDm: boolean, eventAgeSeconds: number, ageSource: string, initial: boolean, reviewerSource: string,
+ *   ownership: string }>}
  */
 async function decideNotification({
   action,
@@ -58697,6 +58862,7 @@ async function decideNotification({
   freshWindowSeconds,
   now = Date.now(),
   loadPullRequestState,
+  loadTimeline,
   warn = () => {},
 }) {
   const result = {
@@ -58709,6 +58875,7 @@ async function decideNotification({
     ageSource: "none",
     initial: false,
     reviewerSource: "none",
+    ownership: "none",
   };
   if (!pullRequest) return result;
 
@@ -58731,25 +58898,29 @@ async function decideNotification({
       return result;
     }
 
-    if (allReviewers.length > 0) {
-      result.reviewerSource = "payload";
+    const state = await tryLoadState(loadPullRequestState, warn, "falling back to the label payload reviewers");
+    const pending = normalizeReviewerList(state ? state.requestedUsers : allReviewers);
+    result.reviewerSource = state ? "api" : "payload-fallback";
+    if (pending.length === 0) {
+      // No individual reviewer to hand over to: post a channel-only message.
+      result.sendChannel = true;
       return result;
     }
 
-    // The label payload may predate the initial review requests. When the live
-    // state already lists individual reviewers, their review_requested runs
-    // post the channel message instead.
-    const state = await tryLoadState(
-      loadPullRequestState,
+    const ownership = await tryLoadOwnership(
+      loadTimeline,
+      urgentLabel,
       warn,
-      "falling back to the label payload, which may duplicate a channel message",
+      "notifying every requested reviewer, which may duplicate the review_requested notifications",
     );
-    if (state && normalizeReviewerList(state.requestedUsers).length > 0) {
-      result.reviewerSource = "api";
-      return result;
-    }
-    result.reviewerSource = state ? "api" : "payload-fallback";
+    const owned = ownership ? pending.filter((login) => ownership.ownedByLabel(login)) : pending;
+    result.ownership = ownership ? "timeline" : "timeline-fallback";
+    if (owned.length === 0) return result;
+
+    result.targetUsers = owned;
+    result.mentionUsers = owned;
     result.sendChannel = true;
+    result.sendDm = true;
     return result;
   }
 
@@ -58786,22 +58957,41 @@ async function decideNotification({
       );
     }
 
-    const observed = state ? state.requestedUsers : allReviewers;
+    const ownership = await tryLoadOwnership(
+      loadTimeline,
+      urgentLabel,
+      warn,
+      "notifying this reviewer as part of the initial batch, which may duplicate the labeled notification",
+    );
+    result.ownership = ownership ? "timeline" : "timeline-fallback";
+    result.urgent = true;
+    result.reviewerSource = state ? "api" : "payload-fallback";
+    // Requested before the urgent label was added: the labeled run notifies this reviewer.
+    if (ownership && ownership.ownedByLabel(newReviewer)) return result;
+
+    const observed = (state ? state.requestedUsers : allReviewers).filter(
+      (login) => !ownership || !ownership.ownedByLabel(login),
+    );
     const reviewers = normalizeReviewerList([...observed, newReviewer]);
     const leader = reviewers[0];
 
-    result.urgent = true;
     result.targetUsers = [newReviewer];
     result.mentionUsers = reviewers;
     result.sendChannel = leader.toLowerCase() === newReviewer.toLowerCase();
     result.sendDm = true;
-    result.reviewerSource = state ? "api" : "payload-fallback";
   }
 
   return result;
 }
 
-module.exports = { decideNotification, collectReviewers, hasUrgentLabel, normalizeReviewerList, computeEventAge };
+module.exports = {
+  decideNotification,
+  collectReviewers,
+  hasUrgentLabel,
+  normalizeReviewerList,
+  computeEventAge,
+  buildOwnership,
+};
 
 
 /***/ }),
