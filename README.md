@@ -6,7 +6,7 @@ Use it with [`kreuz123/slack-dual-notify-action`](https://github.com/kreuz123/sl
 
 - Notify pending individual reviewers when a PR receives the `urgent` label.
 - Notify a reviewer added to an already urgent PR.
-- Send one channel message mentioning all reviewers for a newly created urgent PR, while each reviewer receives their own DM.
+- Send one channel message mentioning all individual reviewers for a newly created urgent PR, while each reviewer receives their own DM.
 - Render a Slack message from pull request details.
 
 This action determines notification recipients and settings. It does not send Slack messages itself. 
