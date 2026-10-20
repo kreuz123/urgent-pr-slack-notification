@@ -146,7 +146,7 @@ Notifications are **stateless and best-effort**, not guaranteed exactly once. Ev
 
 If duplicates or misses are unacceptable, persistent shared state is necessary.
 
-Draft pull requests do not send a notification when they are converted to **Ready for review**. If you need this feature, please open an issue or submit a feature request. It may be considered for a future release.
+Draft pull requests do not send a notification when they are converted to **Ready for review**. To send an urgent Slack notification after conversion, remove and re-add the urgent label. If you need automatic notifications for this event, please open an issue or submit a feature request. It may be considered for a future release.
 
 ## Development
 
@@ -159,6 +159,10 @@ npm run build
 
 `dist/index.js` is committed and must be rebuilt whenever `index.js` or `src/` changes.
 
+## Acknowledgement
+
+Built with support from [Flo Apps Ltd](https://floapps.com), inspired by real-world workflow automation needs.
+
 ## License
 
-[MIT](LICENSE)
+This project is licensed under the [MIT License](LICENSE).
