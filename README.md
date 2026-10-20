@@ -146,6 +146,8 @@ Notifications are **stateless and best-effort**, not guaranteed exactly once. Ev
 
 If duplicates or misses are unacceptable, persistent shared state is necessary.
 
+Draft pull requests do not send a notification when they are converted to **Ready for review**. If you need this feature, please open an issue or submit a feature request. It may be considered for a future release.
+
 ## Development
 
 ```bash
